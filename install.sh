@@ -295,7 +295,7 @@ menu() {
     clear
     check_root
     echo -e "================================================"
-    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.0]${PLAIN}"
+    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.1]${PLAIN}"
     echo -e "  当前状态: $(get_status)"
     echo -e "================================================"
     echo -e "  1. 安装服务 (Install)"
