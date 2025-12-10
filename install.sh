@@ -2,7 +2,7 @@
 
 # ==========================================
 # Shadowsocks-2022 (Rust) 全能管理脚本
-# 版本: v2.0 (交互式菜单版)
+# 版本: v2.1 (交互式菜单版)
 # ==========================================
 
 # --- 全局变量 ---
@@ -25,10 +25,15 @@ check_root() {
 }
 
 install_dependencies() {
+    echo -e "${YELLOW}>> 安装依赖...${PLAIN}"
     if [ -f /etc/debian_version ]; then
-        apt-get update -y >/dev/null 2>&1 && apt-get install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
+        apt-get update -y >/dev/null 2>&1
+        # 修改点：在最后加了 xz-utils
+        apt-get install -y wget curl tar openssl jq coreutils xz-utils >/dev/null 2>&1
     elif [ -f /etc/redhat-release ]; then
-        yum update -y >/dev/null 2>&1 && yum install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
+        yum update -y >/dev/null 2>&1
+        # 修改点：在最后加了 xz
+        yum install -y wget curl tar openssl jq coreutils xz >/dev/null 2>&1
     fi
 }
 
