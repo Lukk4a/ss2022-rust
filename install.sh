@@ -1,83 +1,176 @@
 #!/bin/bash
 
 # ==========================================
-# Shadowsocks-2022 (Rust) SIP002 专版
-# 特性：支持 SIP002 格式链接、IPv6 自动识别、自定义备注
+# Shadowsocks-2022 (Rust) 全能管理脚本
+# 版本: v2.0 (交互式菜单版)
 # ==========================================
 
+# --- 全局变量 ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
 
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}错误: 请使用 sudo 或 root 权限运行此脚本。${PLAIN}" 
-   exit 1
-fi
+CONFIG_FILE="/etc/shadowsocks-rust/config.json"
+SERVICE_FILE="/etc/systemd/system/shadowsocks-rust.service"
+BIN_PATH="/usr/local/bin/ssserver"
 
-echo -e "${GREEN}--- 开始安装 Shadowsocks-2022 (Rust) ---${PLAIN}"
+# --- 基础函数 ---
 
-# --- 1. 交互式配置 ---
-echo -e "${YELLOW}>> 1. 基础配置${PLAIN}"
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}错误: 请使用 sudo 或 root 权限运行此脚本。${PLAIN}"
+        exit 1
+    fi
+}
 
-# 1.1 选择加密方式
-echo -e "\n请选择加密方式 (输入数字):"
-echo "1) 2022-blake3-aes-128-gcm (默认, 推荐)"
-echo "2) 2022-blake3-aes-256-gcm"
-echo "3) 2022-blake3-chacha20-poly1305"
-read -p "请选择 [1-3]: " method_num
+install_dependencies() {
+    if [ -f /etc/debian_version ]; then
+        apt-get update -y >/dev/null 2>&1 && apt-get install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
+    elif [ -f /etc/redhat-release ]; then
+        yum update -y >/dev/null 2>&1 && yum install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
+    fi
+}
 
-case "$method_num" in
-    2) METHOD="2022-blake3-aes-256-gcm"; KEY_BYTES=32; MIN_LEN=40 ;;
-    3) METHOD="2022-blake3-chacha20-poly1305"; KEY_BYTES=32; MIN_LEN=40 ;;
-    *) METHOD="2022-blake3-aes-128-gcm"; KEY_BYTES=16; MIN_LEN=20 ;;
-esac
-echo -e "已选择: ${GREEN}${METHOD}${PLAIN}"
+get_status() {
+    if [[ ! -f $BIN_PATH ]]; then
+        echo -e "${RED}未安装${PLAIN}"
+    else
+        if systemctl is-active --quiet shadowsocks-rust; then
+            echo -e "${GREEN}运行中${PLAIN}"
+        else
+            echo -e "${RED}已停止${PLAIN}"
+        fi
+    fi
+}
 
-# 1.2 设置端口
-read -p "请输入端口 [回车默认 8388]: " input_port
-PORT=${input_port:-8388}
+# --- 核心功能函数 ---
 
-# 1.3 设置密钥
-AUTO_KEY=$(openssl rand -base64 $KEY_BYTES)
-echo -e "\n请输入密钥 [回车随机生成]:"
-read -p ": " input_key
-if [[ -z "$input_key" ]] || [[ ${#input_key} -lt $MIN_LEN ]]; then
-    PASSWORD=$AUTO_KEY
-    echo -e "已使用随机合规密钥: ${GREEN}$PASSWORD${PLAIN}"
-else
-    PASSWORD=$input_key
-fi
+# 1. 安装服务
+install_ss() {
+    install_dependencies
+    
+    # 架构检测
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "x86_64" ]]; then ss_arch="x86_64-unknown-linux-gnu"
+    elif [[ "$ARCH" == "aarch64" ]]; then ss_arch="aarch64-unknown-linux-gnu"
+    else echo -e "${RED}不支持的架构${PLAIN}"; return; fi
 
-# 1.4 设置备注 (用于生成链接)
-echo -e "\n请输入节点备注 (如 '🇯🇵 My Server') [回车默认 'SS-Rust']:"
-read -p ": " input_remark
-REMARK=${input_remark:-SS-Rust}
+    echo -e "${YELLOW}正在获取最新版本信息...${PLAIN}"
+    LATEST_VER=$(curl -s "https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest" | jq -r .tag_name)
+    [ -z "$LATEST_VER" ] && LATEST_VER="v1.15.3"
 
-# --- 2. 安装环境与下载 ---
-echo -e "\n${YELLOW}>> 2. 安装与部署...${PLAIN}"
+    echo -e "${GREEN}下载 Shadowsocks-Rust ${LATEST_VER}...${PLAIN}"
+    wget -qO ss-rust.tar.xz "https://github.com/shadowsocks/shadowsocks-rust/releases/download/${LATEST_VER}/shadowsocks-${LATEST_VER}.${ss_arch}.tar.xz"
+    
+    tar -xf ss-rust.tar.xz
+    mv ssserver /usr/local/bin/
+    chmod +x /usr/local/bin/ssserver
+    rm ss-rust.tar.xz sslocal ssmanager ssurl ssquery 2>/dev/null
 
-if [ -f /etc/debian_version ]; then
-    apt-get update -y >/dev/null 2>&1 && apt-get install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
-elif [ -f /etc/redhat-release ]; then
-    yum update -y >/dev/null 2>&1 && yum install -y wget curl tar openssl jq coreutils >/dev/null 2>&1
-fi
+    # 进入配置生成流程
+    configure_ss "new"
+    
+    # 配置 Systemd
+    cat > $SERVICE_FILE <<EOF
+[Unit]
+Description=Shadowsocks-Rust Server
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssserver -c $CONFIG_FILE
+Restart=on-failure
+LimitNOFILE=51200
+[Install]
+WantedBy=multi-user.target
+EOF
 
-ARCH=$(uname -m)
-if [[ "$ARCH" == "x86_64" ]]; then ss_arch="x86_64-unknown-linux-gnu"
-elif [[ "$ARCH" == "aarch64" ]]; then ss_arch="aarch64-unknown-linux-gnu"
-else echo -e "${RED}不支持的架构${PLAIN}"; exit 1; fi
+    systemctl daemon-reload
+    systemctl enable shadowsocks-rust >/dev/null 2>&1
+    start_ss
+    
+    echo -e "${GREEN}安装完成！${PLAIN}"
+    view_config
+}
 
-LATEST_VER=$(curl -s "https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest" | jq -r .tag_name)
-[ -z "$LATEST_VER" ] && LATEST_VER="v1.15.3"
+# 2. 配置生成/修改逻辑 (通用)
+configure_ss() {
+    MODE=$1 # "new" or "modify"
+    
+    echo -e "\n${YELLOW}>> 配置参数设置${PLAIN}"
+    
+    # --- 加密方式 ---
+    if [[ "$MODE" == "modify" ]]; then
+        CURRENT_METHOD=$(jq -r .method $CONFIG_FILE 2>/dev/null)
+        echo -e "当前加密: ${GREEN}$CURRENT_METHOD${PLAIN}"
+    fi
+    
+    echo "请选择加密方式:"
+    echo "1) 2022-blake3-aes-128-gcm (默认)"
+    echo "2) 2022-blake3-aes-256-gcm"
+    echo "3) 2022-blake3-chacha20-poly1305"
+    read -p "选择 (留空保持默认/原值): " method_num
+    
+    if [[ -z "$method_num" && "$MODE" == "modify" ]]; then
+        METHOD=$CURRENT_METHOD
+    else
+        case "$method_num" in
+            2) METHOD="2022-blake3-aes-256-gcm"; KEY_BYTES=32; MIN_LEN=40 ;;
+            3) METHOD="2022-blake3-chacha20-poly1305"; KEY_BYTES=32; MIN_LEN=40 ;;
+            *) METHOD="2022-blake3-aes-128-gcm"; KEY_BYTES=16; MIN_LEN=20 ;;
+        esac
+    fi
+    
+    # 根据 Method 确定密钥长度参数 (用于后续校验)
+    case "$METHOD" in
+        *"aes-128"*) KEY_BYTES=16; MIN_LEN=20 ;;
+        *) KEY_BYTES=32; MIN_LEN=40 ;;
+    esac
 
-wget -qO ss-rust.tar.xz "https://github.com/shadowsocks/shadowsocks-rust/releases/download/${LATEST_VER}/shadowsocks-${LATEST_VER}.${ss_arch}.tar.xz"
-tar -xf ss-rust.tar.xz && mv ssserver /usr/local/bin/ && chmod +x /usr/local/bin/ssserver
-rm ss-rust.tar.xz sslocal ssmanager ssurl ssquery 2>/dev/null
+    # --- 端口 ---
+    if [[ "$MODE" == "modify" ]]; then
+        CURRENT_PORT=$(jq -r .server_port $CONFIG_FILE 2>/dev/null)
+        echo -e "当前端口: ${GREEN}$CURRENT_PORT${PLAIN}"
+        read -p "新端口 (留空保持原值): " input_port
+        PORT=${input_port:-$CURRENT_PORT}
+    else
+        read -p "端口 [默认 8388]: " input_port
+        PORT=${input_port:-8388}
+    fi
 
-# --- 3. 配置文件 ---
-mkdir -p /etc/shadowsocks-rust
-cat > /etc/shadowsocks-rust/config.json <<EOF
+    # --- 密钥 ---
+    AUTO_KEY=$(openssl rand -base64 $KEY_BYTES)
+    if [[ "$MODE" == "modify" ]]; then
+        CURRENT_PASS=$(jq -r .password $CONFIG_FILE 2>/dev/null)
+        echo -e "当前密钥: ${GREEN}$CURRENT_PASS${PLAIN}"
+        echo -e "注意: 如果更改了加密方式，建议重新生成密钥。"
+        read -p "新密钥 (留空保持原值, 输入 'r' 随机生成): " input_key
+        if [[ "$input_key" == "r" ]]; then
+            PASSWORD=$AUTO_KEY
+            echo -e "已随机生成新密钥。"
+        elif [[ -z "$input_key" ]]; then
+            PASSWORD=$CURRENT_PASS
+        else
+            PASSWORD=$input_key
+        fi
+    else
+        read -p "密钥 [回车随机生成]: " input_key
+        if [[ -z "$input_key" ]]; then
+            PASSWORD=$AUTO_KEY
+        else
+            PASSWORD=$input_key
+        fi
+    fi
+    
+    # 最终密钥长度检查
+    if [[ ${#PASSWORD} -lt $MIN_LEN ]]; then
+        echo -e "${RED}警告: 密钥长度不符合 $METHOD 标准，已自动替换为随机密钥。${PLAIN}"
+        PASSWORD=$AUTO_KEY
+    fi
+
+    # 写入配置
+    mkdir -p /etc/shadowsocks-rust
+    cat > $CONFIG_FILE <<EOF
 {
     "server": "::",
     "server_port": $PORT,
@@ -87,66 +180,153 @@ cat > /etc/shadowsocks-rust/config.json <<EOF
     "fast_open": true
 }
 EOF
+    
+    # 放行端口
+    if command -v ufw > /dev/null; then ufw allow $PORT >/dev/null 2>&1; fi
+    if command -v firewall-cmd > /dev/null; then 
+        firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port=$PORT/udp >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1
+    fi
+}
 
-# --- 4. Systemd 服务 ---
-cat > /etc/systemd/system/shadowsocks-rust.service <<EOF
-[Unit]
-Description=Shadowsocks-Rust Server
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
-Restart=on-failure
-LimitNOFILE=51200
-[Install]
-WantedBy=multi-user.target
-EOF
+# 3. 更新脚本
+update_ss() {
+    echo -e "${YELLOW}正在检查更新...${PLAIN}"
+    if [[ ! -f $BIN_PATH ]]; then
+        echo -e "${RED}未安装 SS-Rust，请先安装。${PLAIN}"
+        return
+    fi
+    
+    # 简单粗暴的更新逻辑：直接重新下载覆盖
+    install_ss
+    echo -e "${GREEN}更新完成。${PLAIN}"
+}
 
-systemctl daemon-reload
-systemctl enable shadowsocks-rust >/dev/null 2>&1
-systemctl restart shadowsocks-rust
+# 4. 卸载
+uninstall_ss() {
+    read -p "确定要卸载 Shadowsocks-Rust 吗? (y/n): " confirm
+    if [[ "$confirm" == "y" ]]; then
+        systemctl stop shadowsocks-rust
+        systemctl disable shadowsocks-rust
+        rm $SERVICE_FILE
+        rm $BIN_PATH
+        rm -rf /etc/shadowsocks-rust
+        systemctl daemon-reload
+        echo -e "${GREEN}卸载完成。${PLAIN}"
+    else
+        echo "已取消。"
+    fi
+}
 
-# 放行端口
-if command -v ufw > /dev/null; then ufw allow $PORT >/dev/null 2>&1
-elif command -v firewall-cmd > /dev/null; then
-    firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1
-    firewall-cmd --permanent --add-port=$PORT/udp >/dev/null 2>&1
-    firewall-cmd --reload >/dev/null 2>&1
-fi
+# 5. 查看配置与链接生成
+view_config() {
+    if [[ ! -f $CONFIG_FILE ]]; then
+        echo -e "${RED}配置文件不存在。${PLAIN}"
+        return
+    fi
 
-# --- 5. 生成 SIP002 格式链接 (关键修改) ---
-echo -e "\n${YELLOW}>> 3. 生成链接${PLAIN}"
+    echo -e "\n${YELLOW}>> 当前配置信息${PLAIN}"
+    
+    # 使用 jq 解析 JSON
+    PORT=$(jq -r .server_port $CONFIG_FILE)
+    PASSWORD=$(jq -r .password $CONFIG_FILE)
+    METHOD=$(jq -r .method $CONFIG_FILE)
+    
+    # 获取 IP
+    IP=$(curl -s4 ifconfig.me)
+    if [[ -z "$IP" ]]; then IP=$(curl -s6 ifconfig.me); fi
+    
+    # 处理 IPv6 显示
+    if [[ "$IP" =~ .*:.* ]]; then HOST="[${IP}]"; else HOST="${IP}"; fi
+    
+    # 生成 SIP002 链接
+    AUTH_STR="${METHOD}:${PASSWORD}"
+    AUTH_B64=$(echo -n "${AUTH_STR}" | base64 -w 0)
+    SS_LINK="ss://${AUTH_B64}@${HOST}:${PORT}#SS-Rust"
 
-# 5.1 获取 IP (优先获取公网 IPv4，如果没有则获取 IPv6)
-IP=$(curl -s4 ifconfig.me)
-if [[ -z "$IP" ]]; then
-    IP=$(curl -s6 ifconfig.me)
-fi
+    echo -e "地址:     ${GREEN}${HOST}${PLAIN}"
+    echo -e "端口:     ${GREEN}${PORT}${PLAIN}"
+    echo -e "加密:     ${GREEN}${METHOD}${PLAIN}"
+    echo -e "密钥:     ${GREEN}${PASSWORD}${PLAIN}"
+    echo -e "------------------------------------------------"
+    echo -e "链接:     ${GREEN}${SS_LINK}${PLAIN}"
+    echo -e "------------------------------------------------"
+}
 
-# 5.2 处理 IPv6 格式 (如果是 IPv6，必须加 [])
-if [[ "$IP" =~ .*:.* ]]; then
-    HOST="[${IP}]"
-else
-    HOST="${IP}"
-fi
+# 6. 修改配置
+modify_config_action() {
+    if [[ ! -f $CONFIG_FILE ]]; then
+        echo -e "${RED}未找到配置文件，请先安装。${PLAIN}"
+        return
+    fi
+    configure_ss "modify"
+    restart_ss
+    echo -e "${GREEN}配置已修改并重启服务。${PLAIN}"
+    view_config
+}
 
-# 5.3 编码 UserInfo (仅编码 method:password)
-# 注意： SIP002 标准格式为 ss://Base64(method:password)@host:port#remark
-AUTH_STR="${METHOD}:${PASSWORD}"
-AUTH_B64=$(echo -n "${AUTH_STR}" | base64 -w 0)
+# 7. 删除配置
+delete_config() {
+    if [[ -f $CONFIG_FILE ]]; then
+        read -p "确定要删除配置文件吗? 服务将停止 (y/n): " confirm
+        if [[ "$confirm" == "y" ]]; then
+            rm $CONFIG_FILE
+            stop_ss
+            echo -e "${GREEN}配置文件已删除。${PLAIN}"
+        fi
+    else
+        echo -e "${RED}配置文件不存在。${PLAIN}"
+    fi
+}
 
-# 5.4 拼接最终链接
-SS_LINK="ss://${AUTH_B64}@${HOST}:${PORT}#${REMARK}"
+# 服务控制封装
+start_ss() { systemctl start shadowsocks-rust; echo -e "${GREEN}服务已启动${PLAIN}"; }
+stop_ss() { systemctl stop shadowsocks-rust; echo -e "${GREEN}服务已停止${PLAIN}"; }
+restart_ss() { systemctl restart shadowsocks-rust; echo -e "${GREEN}服务已重启${PLAIN}"; }
 
-echo ""
-echo "================================================"
-echo -e "✅ ${GREEN}安装完成！${PLAIN}"
-echo "================================================"
-echo -e "IP 地址:  ${HOST}"
-echo -e "端口:     ${PORT}"
-echo -e "加密方式: ${METHOD}"
-echo -e "密码:     ${PASSWORD}"
-echo "================================================"
-echo -e "🔗 SIP002 标准链接 (与你的示例格式一致):"
-echo -e "${GREEN}${SS_LINK}${PLAIN}"
-echo "================================================"
+# --- 菜单界面 ---
+menu() {
+    clear
+    check_root
+    echo -e "================================================"
+    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.0]${PLAIN}"
+    echo -e "  当前状态: $(get_status)"
+    echo -e "================================================"
+    echo -e "  1. 安装服务 (Install)"
+    echo -e "  2. 更新版本 (Update)"
+    echo -e "  3. 卸载服务 (Uninstall)"
+    echo -e "------------------------------------------------"
+    echo -e "  4. 查看配置 & 链接 (View Config)"
+    echo -e "  5. 修改配置 (Modify Config)"
+    echo -e "  6. 删除配置 (Delete Config)"
+    echo -e "------------------------------------------------"
+    echo -e "  7. 启动服务 (Start)"
+    echo -e "  8. 停止服务 (Stop)"
+    echo -e "  9. 重启服务 (Restart)"
+    echo -e "------------------------------------------------"
+    echo -e "  0. 退出脚本 (Exit)"
+    echo -e "================================================"
+    
+    read -p "请输入选择 [0-9]: " choice
+    case "$choice" in
+        1) install_ss ;;
+        2) update_ss ;;
+        3) uninstall_ss ;;
+        4) view_config ;;
+        5) modify_config_action ;;
+        6) delete_config ;;
+        7) start_ss ;;
+        8) stop_ss ;;
+        9) restart_ss ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效输入${PLAIN}" ;;
+    esac
+    
+    echo -e "\n[按回车键返回菜单...]"
+    read
+    menu
+}
+
+# 脚本入口
+menu
