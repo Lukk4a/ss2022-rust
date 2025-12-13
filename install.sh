@@ -2,7 +2,7 @@
 
 # ==========================================
 # Shadowsocks-2022 (Rust) 全能管理脚本
-# 版本: v2.1 (交互式菜单版)
+# 版本: v2.2 (增加时间校准功能)
 # ==========================================
 
 # --- 全局变量 ---
@@ -28,13 +28,43 @@ install_dependencies() {
     echo -e "${YELLOW}>> 安装依赖...${PLAIN}"
     if [ -f /etc/debian_version ]; then
         apt-get update -y >/dev/null 2>&1
-        # 修改点：在最后加了 xz-utils
-        apt-get install -y wget curl tar openssl jq coreutils xz-utils >/dev/null 2>&1
+        # 修改点：增加了 ntpdate
+        apt-get install -y wget curl tar openssl jq coreutils xz-utils ntpdate >/dev/null 2>&1
     elif [ -f /etc/redhat-release ]; then
         yum update -y >/dev/null 2>&1
-        # 修改点：在最后加了 xz
-        yum install -y wget curl tar openssl jq coreutils xz >/dev/null 2>&1
+        # 修改点：增加了 ntpdate
+        yum install -y wget curl tar openssl jq coreutils xz ntpdate >/dev/null 2>&1
     fi
+}
+
+# --- 新增：时间校准函数 ---
+sync_time() {
+    echo -e "${YELLOW}>> 正在校准系统时间...${PLAIN}"
+    
+    # 1. 优先尝试 systemd 方式
+    if command -v timedatectl > /dev/null; then
+        timedatectl set-ntp true 2>/dev/null
+    fi
+
+    # 2. 强制使用 ntpdate 同步 (解决 systemd 同步慢的问题)
+    # 先停止可能占用端口的服务
+    systemctl stop ntp 2>/dev/null
+    systemctl stop chronyd 2>/dev/null
+    
+    ntpdate pool.ntp.org >/dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}时间同步成功!${PLAIN}"
+    else
+        echo -e "${RED}同步失败，尝试备用服务器...${PLAIN}"
+        ntpdate time.nist.gov >/dev/null 2>&1
+    fi
+
+    # 3. 设置时区为上海 (可选，为了查看日志方便，也可以注释掉)
+    timedatectl set-timezone Asia/Shanghai 2>/dev/null
+
+    echo -e "当前服务器时间: ${GREEN}$(date)${PLAIN}"
+    echo -e "${YELLOW}提示: SS-2022 要求客户端与服务器时间误差需在 30秒 以内。${PLAIN}"
 }
 
 get_status() {
@@ -92,6 +122,10 @@ EOF
 
     systemctl daemon-reload
     systemctl enable shadowsocks-rust >/dev/null 2>&1
+    
+    # 修改点：在启动服务前，强制校准一次时间
+    sync_time
+    
     start_ss
     
     echo -e "${GREEN}安装完成！${PLAIN}"
@@ -295,7 +329,7 @@ menu() {
     clear
     check_root
     echo -e "================================================"
-    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.1]${PLAIN}"
+    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.2]${PLAIN}"
     echo -e "  当前状态: $(get_status)"
     echo -e "================================================"
     echo -e "  1. 安装服务 (Install)"
@@ -309,11 +343,12 @@ menu() {
     echo -e "  7. 启动服务 (Start)"
     echo -e "  8. 停止服务 (Stop)"
     echo -e "  9. 重启服务 (Restart)"
+    echo -e "  10. 校准时间 (Sync Time)"
     echo -e "------------------------------------------------"
     echo -e "  0. 退出脚本 (Exit)"
     echo -e "================================================"
     
-    read -p "请输入选择 [0-9]: " choice
+    read -p "请输入选择 [0-10]: " choice
     case "$choice" in
         1) install_ss ;;
         2) update_ss ;;
@@ -324,6 +359,7 @@ menu() {
         7) start_ss ;;
         8) stop_ss ;;
         9) restart_ss ;;
+        10) sync_time ;;
         0) exit 0 ;;
         *) echo -e "${RED}无效输入${PLAIN}" ;;
     esac
