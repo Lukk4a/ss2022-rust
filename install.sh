@@ -2,7 +2,7 @@
 
 # ==========================================
 # Shadowsocks-2022 (Rust) 全能管理脚本
-# 版本: v2.2 (增加时间校准功能)
+# 版本: v2.3 (强制开启 UDP)
 # ==========================================
 
 # --- 全局变量 ---
@@ -207,7 +207,7 @@ configure_ss() {
         PASSWORD=$AUTO_KEY
     fi
 
-    # 写入配置
+    # 写入配置 (关键修改: 强制写入 mode: tcp_and_udp)
     mkdir -p /etc/shadowsocks-rust
     cat > $CONFIG_FILE <<EOF
 {
@@ -215,6 +215,7 @@ configure_ss() {
     "server_port": $PORT,
     "password": "$PASSWORD",
     "method": "$METHOD",
+    "mode": "tcp_and_udp",
     "timeout": 300,
     "fast_open": true
 }
@@ -329,7 +330,7 @@ menu() {
     clear
     check_root
     echo -e "================================================"
-    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.2]${PLAIN}"
+    echo -e "  Shadowsocks-2022 (Rust) 管理脚本 ${YELLOW}[v2.3]${PLAIN}"
     echo -e "  当前状态: $(get_status)"
     echo -e "================================================"
     echo -e "  1. 安装服务 (Install)"
